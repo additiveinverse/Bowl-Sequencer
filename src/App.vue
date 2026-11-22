@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { getBallPosition, PIN_LAYOUT, simulateThrow } from './bowling.js'
 import { generatePattern } from './pattern.js'
 
 const canvas = ref(null)
@@ -20,13 +21,6 @@ let animationFrame = 0
 let throwStartedAt = 0
 let resizeObserver
 
-const pinPositions = [
-  [0, 0],
-  [-0.09, 0.12], [0.09, 0.12],
-  [-0.18, 0.24], [0, 0.24], [0.18, 0.24],
-  [-0.27, 0.36], [-0.09, 0.36], [0.09, 0.36], [0.27, 0.36],
-]
-
 const isFrameComplete = computed(() => {
   if (!latestArtifact.value) return false
   return latestArtifact.value.outcome.strike || throwNumber.value === 2
@@ -43,32 +37,25 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function makeArtifact(knockedPins, targetX) {
-  const remainingPins = pins.value.filter((pin) => !knockedPins.includes(pin))
+function makeArtifact(simulation) {
+  const { knockedPins, remainingPins } = simulation
   const generated = generatePattern(remainingPins, power.value)
-  const trajectory = Array.from({ length: 8 }, (_, index) => {
-    const progress = index / 7
-    return {
-      x: Number((aim.value + hook.value * progress * progress * 0.28).toFixed(3)),
-      y: Number(progress.toFixed(3)),
-    }
-  })
 
   return {
     timestamp: new Date().toISOString(),
     frame: frame.value,
     throw: throwNumber.value,
     approach: {
-      trajectory,
+      trajectory: simulation.trajectory,
       travelTime: 2.2,
       releasePower: Number(power.value.toFixed(2)),
       hookAmount: Number(hook.value.toFixed(2)),
     },
     impact: {
-      impactX: Number(targetX.toFixed(3)),
-      impactY: 0.15,
+      impactX: Number(simulation.impactX.toFixed(3)),
+      impactY: Number(simulation.impactY.toFixed(3)),
       impactEnergy: Number(power.value.toFixed(2)),
-      firstPinHit: knockedPins.length ? knockedPins[0] + 1 : null,
+      firstPinHit: simulation.firstPinHit === null ? null : simulation.firstPinHit + 1,
     },
     outcome: {
       pinsRemaining: remainingPins.map((pin) => pin + 1),
@@ -94,20 +81,17 @@ function launch() {
 }
 
 function finishThrow() {
-  const targetX = clamp(aim.value + hook.value * 0.24, -1, 1)
-  const alignment = 1 - Math.min(1, Math.abs(targetX))
-  const count = clamp(Math.round(power.value * alignment * 10), 0, pins.value.length)
-  const orderedPins = [...pins.value].sort((a, b) => {
-    const distanceA = Math.abs(pinPositions[a][0] - targetX * 0.28) + pinPositions[a][1] * 0.22
-    const distanceB = Math.abs(pinPositions[b][0] - targetX * 0.28) + pinPositions[b][1] * 0.22
-    return distanceA - distanceB
+  const simulation = simulateThrow({
+    standingPins: pins.value,
+    aim: aim.value,
+    power: power.value,
+    hook: hook.value,
   })
-  const knockedPins = orderedPins.slice(0, count)
-  const artifact = makeArtifact(knockedPins, targetX)
+  const artifact = makeArtifact(simulation)
 
-  pins.value = artifact.outcome.pinsRemaining.map((pin) => pin - 1)
-  framePins.value += count
-  totalPins.value += count
+  pins.value = simulation.remainingPins
+  framePins.value += simulation.knockedPins.length
+  totalPins.value += simulation.knockedPins.length
   artifacts.value.push(artifact)
   latestArtifact.value = artifact
   phase.value = 'result'
@@ -201,11 +185,10 @@ function drawLane() {
     context.stroke()
   }
 
-  const pinScale = (laneRight - laneLeft) * 0.12
   for (const pin of pins.value) {
-    const [pinX, pinY] = pinPositions[pin]
-    const x = width / 2 + pinX * pinScale
-    const y = laneTop + 28 + pinY * pinScale
+    const position = PIN_LAYOUT[pin]
+    const x = width / 2 + position.x * (laneRight - laneLeft)
+    const y = laneTop + (1 - position.y) / 2 * (laneBottom - laneTop)
     context.shadowColor = '#ff56d8'
     context.shadowBlur = 12
     context.fillStyle = '#fff6ff'
@@ -218,10 +201,10 @@ function drawLane() {
   }
 
   let ballY = laneBottom - 32
-  let ballX = width / 2 + aim.value * laneScale(width) * 0.34
+  let ballX = width / 2 + getBallPosition(aim.value, hook.value, 0).x * (laneRight - laneLeft)
   if (phase.value === 'rolling') {
     ballY = laneBottom - (laneBottom - laneTop - 48) * ballProgress.value
-    ballX = width / 2 + (aim.value + hook.value * ballProgress.value * ballProgress.value * 0.24) * laneScale(width) * 0.34
+    ballX = width / 2 + getBallPosition(aim.value, hook.value, ballProgress.value).x * (laneRight - laneLeft)
   }
   context.shadowColor = '#52f5ff'
   context.shadowBlur = 22
@@ -234,10 +217,6 @@ function drawLane() {
   context.arc(ballX, ballY, 13, 0, Math.PI * 2)
   context.fill()
   context.shadowBlur = 0
-}
-
-function laneScale(width) {
-  return width * 0.32
 }
 
 function animate(now) {

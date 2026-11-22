@@ -763,6 +763,8 @@ npm install
 npm run dev
 ```
 
+Open the localhost URL printed by Vite; do not open `index.html` directly, because Vue single-file components must be compiled by the dev server.
+
 Run the pattern tests and production build with:
 
 ```txt

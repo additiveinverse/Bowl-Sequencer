@@ -9,7 +9,7 @@
 - [x] Preview velocity/accent maps and export artifacts as JSON.
 
 ## Next — make bowling feel right
-- [ ] Replace the prototype outcome formula with readable, deterministic ball/pin collision behavior.
+- [x] Replace the prototype outcome formula with deterministic path-to-pin collisions and downstream pin energy transfer.
 - [ ] Implement official ten-pin frame scoring, including strike, spare, and tenth-frame rules.
 - [ ] Add satisfying pinfall animation, trail, impact flash, and clear split detection.
 - [ ] Add tests for scoring, seed stability, and artifact shape.

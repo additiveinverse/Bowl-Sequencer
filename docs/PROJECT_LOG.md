@@ -27,3 +27,26 @@
 ### Next Experiment
 - Play-test aim/power/hook feel and compare repeated outcomes to verify that identical remaining-pin states always produce identical patterns.
 - Add focused tests for the pin-mask seed and official frame scoring before expanding the gameplay loop.
+
+## 2026-11-22 — Collision model and local launch guidance
+
+### Challenges
+- Opening `index.html` directly bypasses Vite, so the browser cannot compile the Vue single-file component and initially showed a blank page.
+- Outcome counts were previously computed from aim and power rather than the ball's path through the pin deck.
+
+### What We Learned
+- Direct impacts can be computed from the sampled ball trajectory, then resolved through deterministic energy transfer to pins in downstream rows.
+- The HTML mount point can show launch instructions until Vue mounts, making the `file://` failure actionable without changing the Vite workflow.
+
+### Changed Assumptions
+- Pin collisions use a deterministic arcade model rather than rigid-body simulation; actual per-pin fall animation remains a later visual task.
+
+### Decisions
+- Kept Vite as the supported local workflow: run `npm run dev` and open its printed localhost URL.
+- Extracted throw simulation into a standalone module so collision outcomes can be tested independently of Canvas rendering.
+
+### Open Questions
+- Tune collision radius and energy transfer with play-testing once the intended feel is clearer.
+
+### Next Experiment
+- Implement and test official ten-pin scoring, including strikes, spares, and tenth-frame rules.
