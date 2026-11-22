@@ -48,5 +48,33 @@
 ### Open Questions
 - Tune collision radius and energy transfer with play-testing once the intended feel is clearer.
 
+## 2026-11-22 — Bowling-first pivot
+
+### Challenges
+- The screen still gave equal weight to patterns and pins, and the game had no official scorecard or tenth-frame bonus logic.
+- Pinfall was only reflected by removing pins after a throw, which made a good hit feel visually flat.
+
+### What We Learned
+- A complete ten-frame scoring model needs to treat bonus rolls as part of the tenth frame and delay strike/spare totals until their bonus rolls exist.
+- The trajectory/collision result can drive a short pinfall sequence, trail, and impact flash without putting presentation code in the rules module.
+
+### Changed Assumptions
+- User direction: "Forget the sequencer for now. Build the most satisfying minimalist arcade bowling game you can."
+- Bowling is now the active product; sequencer screens and outputs are parked rather than part of the throw loop.
+- "Satisfying" means the shot is readable, pinfall is visible, and the scorecard rewards frame-to-frame play—not just brighter visuals.
+
+### Decisions
+- Added pure scoring rules for regular frames and tenth-frame rack resets/bonus throws.
+- Reworked the play screen around a scorecard, lane, shot controls, and roll feedback.
+- Kept pin collision results deterministic so scoring and pinfall remain testable.
+- Added optional synthesized roll and impact sounds; they are independent of sequencer playback.
+
+### Open Questions
+- What balance of power, hook, and collision spread makes a strike feel earned without making misses frustrating?
+- Is default-on arcade sound comfortable across desktop and mobile speakers?
+
+### Next Experiment
+- Play several complete games, especially tenth-frame combinations, and tune collision/control feel before restoring optional music features.
+
 ### Next Experiment
 - Implement and test official ten-pin scoring, including strikes, spares, and tenth-frame rules.

@@ -18,7 +18,7 @@ function clamp(value, min, max) {
 export function getBallPosition(aim, hook, progress) {
   const t = clamp(progress, 0, 1)
   return {
-    x: clamp(aim * 0.32 + hook * 0.12 * t * t, -0.48, 0.48),
+    x: clamp(aim * 0.4 + hook * 0.15 * t * t, -0.5, 0.5),
     y: -1 + 2 * t,
   }
 }
@@ -82,6 +82,7 @@ export function simulateThrow({ standingPins, aim, power, hook }) {
   const knockedPins = pins
     .filter((pin) => energies.get(pin.id) >= KNOCKDOWN_THRESHOLD)
     .map((pin) => pin.id)
+  const pinfall = knockedPins.map((id) => ({ id, energy: energies.get(id) }))
   const remainingPins = standingPins.filter((pin) => !knockedPins.includes(pin))
   const firstHit = [...directHits.entries()].sort((a, b) => a[1] - b[1])[0]
   const impactProgress = firstHit ? firstHit[1] : 1
@@ -89,10 +90,12 @@ export function simulateThrow({ standingPins, aim, power, hook }) {
 
   return {
     knockedPins,
+    pinfall,
     remainingPins,
     trajectory,
     impactX: impactPosition.x,
     impactY: impactProgress,
     firstPinHit: firstHit ? firstHit[0] : null,
+    gutter: trajectory.some((point) => Math.abs(point.x) > 0.46),
   }
 }

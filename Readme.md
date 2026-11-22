@@ -754,7 +754,7 @@ The music layer exists to reward play, not to replace it.
 
 # Prototype Status
 
-The first playable pass provides a Canvas 2D lane, aim/power/hook controls, a basic two-throw frame flow, deterministic drum-pattern generation, and JSON artifact export. Its pinfall model and frame display are prototypes, not a complete bowling simulation or official scoring system.
+The current prototype is a bowling-first arcade game: Canvas 2D lane, aim/power/hook controls, deterministic pin collisions, animated pinfall, synthesized roll/impact sounds with a mute toggle, and ten-frame scoring with tenth-frame bonus balls. Sequencer UI, drum playback, and MIDI are intentionally parked while the bowling loop is tuned.
 
 Run locally with:
 
@@ -765,7 +765,7 @@ npm run dev
 
 Open the localhost URL printed by Vite; do not open `index.html` directly, because Vue single-file components must be compiled by the dev server.
 
-Run the pattern tests and production build with:
+Run the game/scoring tests and production build with:
 
 ```txt
 npm test

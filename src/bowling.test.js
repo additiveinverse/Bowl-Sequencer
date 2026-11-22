@@ -25,7 +25,15 @@ test('a shot outside the pin deck misses and preserves the rack', () => {
 
   assert.deepEqual(result.knockedPins, [])
   assert.equal(result.firstPinHit, null)
+  assert.equal(result.gutter, false)
   assert.deepEqual(result.remainingPins, Array.from({ length: 10 }, (_, index) => index))
+})
+
+test('a shot that leaves the lane is identified as a gutter ball', () => {
+  const result = bowl({ aim: 1, hook: 1 })
+
+  assert.deepEqual(result.knockedPins, [])
+  assert.equal(result.gutter, true)
 })
 
 test('the same shot and rack produce identical collisions and trajectory', () => {

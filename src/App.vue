@@ -1,146 +1,181 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { getBallPosition, PIN_LAYOUT, simulateThrow } from './bowling.js'
-import { generatePattern } from './pattern.js'
+import { getFrameTransition, getScorecard } from './scoring.js'
+import { playPinImpact, setSoundMuted, startRollSound, stopRollSound } from './sound.js'
 
 const canvas = ref(null)
 const aim = ref(0)
 const power = ref(0.72)
 const hook = ref(0)
 const pins = ref(Array.from({ length: 10 }, (_, index) => index))
+const frames = ref(Array.from({ length: 10 }, () => ({ rolls: [], complete: false })))
+const currentFrame = ref(0)
 const phase = ref('ready')
-const frame = ref(1)
-const throwNumber = ref(1)
-const framePins = ref(0)
-const totalPins = ref(0)
-const artifacts = ref([])
-const latestArtifact = ref(null)
+const soundEnabled = ref(true)
 const ballProgress = ref(0)
+const lastRoll = ref(null)
+const fallenPins = ref([])
+const trail = ref([])
+const impactFlash = ref(null)
 
 let animationFrame = 0
 let throwStartedAt = 0
 let resizeObserver
 
-const isFrameComplete = computed(() => {
-  if (!latestArtifact.value) return false
-  return latestArtifact.value.outcome.strike || throwNumber.value === 2
-})
-
-const frameResult = computed(() => {
-  if (!latestArtifact.value) return ''
-  if (latestArtifact.value.outcome.strike) return 'STRIKE'
-  if (isFrameComplete.value && framePins.value === 10) return 'SPARE'
-  return isFrameComplete.value ? 'OPEN FRAME' : 'FIRST THROW'
+const scorecard = computed(() => getScorecard(frames.value))
+const currentFrameState = computed(() => frames.value[currentFrame.value])
+const throwNumber = computed(() => currentFrameState.value.rolls.length + 1)
+const totalScore = computed(() => {
+  const resolved = [...scorecard.value].reverse().find((frame) => frame.cumulative !== null)
+  const hasThrown = frames.value.some((frame) => frame.rolls.length > 0)
+  return resolved?.cumulative ?? (hasThrown ? '—' : 0)
 })
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function makeArtifact(simulation) {
-  const { knockedPins, remainingPins } = simulation
-  const generated = generatePattern(remainingPins, power.value)
-
-  return {
-    timestamp: new Date().toISOString(),
-    frame: frame.value,
-    throw: throwNumber.value,
-    approach: {
-      trajectory: simulation.trajectory,
-      travelTime: 2.2,
-      releasePower: Number(power.value.toFixed(2)),
-      hookAmount: Number(hook.value.toFixed(2)),
-    },
-    impact: {
-      impactX: Number(simulation.impactX.toFixed(3)),
-      impactY: Number(simulation.impactY.toFixed(3)),
-      impactEnergy: Number(power.value.toFixed(2)),
-      firstPinHit: simulation.firstPinHit === null ? null : simulation.firstPinHit + 1,
-    },
-    outcome: {
-      pinsRemaining: remainingPins.map((pin) => pin + 1),
-      pinsKnockedDown: knockedPins.length,
-      score: knockedPins.length,
-      strike: throwNumber.value === 1 && knockedPins.length === 10,
-      spare: throwNumber.value === 2 && framePins.value + knockedPins.length === 10,
-      split: false,
-    },
-    pattern: generated.pattern,
-    seed: generated.seed,
-    drums: generated.drums,
-    velocityMap: generated.velocityMap,
-    accentMap: generated.accentMap,
+function getRollLabel(frameIndex, previousRolls, pinsDown, gutter) {
+  const rollNumber = previousRolls.length + 1
+  if (frameIndex < 9) {
+    if (rollNumber === 1 && pinsDown === 10) return 'STRIKE!'
+    if (rollNumber === 2 && previousRolls[0] + pinsDown === 10) return 'SPARE!'
+  } else {
+    if (rollNumber === 2 && previousRolls[0] === 10 && pinsDown === 10) return 'DOUBLE!'
+    if (rollNumber === 2 && previousRolls[0] < 10 && previousRolls[0] + pinsDown === 10) return 'SPARE!'
+    if (rollNumber === 3 && previousRolls[0] === 10 && previousRolls[1] < 10 && previousRolls[1] + pinsDown === 10) return 'SPARE!'
+    if (pinsDown === 10) return 'STRIKE!'
   }
+  if (pinsDown === 0) return gutter ? 'GUTTER' : 'NO CONTACT'
+  return `${pinsDown} DOWN`
 }
 
 function launch() {
-  if (phase.value !== 'ready' || frame.value > 10) return
+  if (phase.value !== 'ready') return
   phase.value = 'rolling'
   ballProgress.value = 0
+  trail.value = []
+  impactFlash.value = null
+  fallenPins.value = []
+  startRollSound()
   throwStartedAt = performance.now()
 }
 
 function finishThrow() {
+  stopRollSound()
+  const frameIndex = currentFrame.value
+  const previousRolls = currentFrameState.value.rolls
   const simulation = simulateThrow({
     standingPins: pins.value,
     aim: aim.value,
     power: power.value,
     hook: hook.value,
   })
-  const artifact = makeArtifact(simulation)
+  const pinsDown = simulation.knockedPins.length
+  playPinImpact(pinsDown)
+  const rolls = [...previousRolls, pinsDown]
+  const transition = getFrameTransition(frameIndex, rolls)
 
+  frames.value[frameIndex] = { rolls, complete: transition.frameComplete }
   pins.value = simulation.remainingPins
-  framePins.value += simulation.knockedPins.length
-  totalPins.value += simulation.knockedPins.length
-  artifacts.value.push(artifact)
-  latestArtifact.value = artifact
+  lastRoll.value = {
+    frame: frameIndex + 1,
+    throw: rolls.length,
+    pinsDown,
+    pinsStanding: pins.value.length,
+    label: getRollLabel(frameIndex, previousRolls, pinsDown, simulation.gutter),
+    transition,
+  }
+
+  const now = performance.now()
+  fallenPins.value = simulation.pinfall.map(({ id, energy }) => {
+    const position = PIN_LAYOUT[id]
+    return {
+      id,
+      energy,
+      startAt: now + Math.max(0, (position.y - 0.55) * 650),
+      direction: Math.sign(position.x - simulation.impactX) || (id % 2 ? 1 : -1),
+    }
+  })
+  if (simulation.firstPinHit !== null) {
+    impactFlash.value = { startedAt: now, progress: simulation.impactY, x: simulation.impactX }
+  }
   phase.value = 'result'
 }
 
 function advance() {
+  if (phase.value === 'gameover') {
+    restartGame()
+    return
+  }
   if (phase.value !== 'result') return
 
-  if (isFrameComplete.value) {
-    frame.value += 1
-    throwNumber.value = 1
-    framePins.value = 0
-    pins.value = Array.from({ length: 10 }, (_, index) => index)
-  } else {
-    throwNumber.value = 2
+  const { transition } = lastRoll.value
+  if (transition.gameOver) {
+    phase.value = 'gameover'
+    return
   }
 
-  latestArtifact.value = null
-  phase.value = frame.value > 10 ? 'gameover' : 'ready'
+  if (transition.frameComplete) {
+    currentFrame.value += 1
+    pins.value = Array.from({ length: 10 }, (_, index) => index)
+  } else if (transition.newRack) {
+    pins.value = Array.from({ length: 10 }, (_, index) => index)
+  }
+
+  lastRoll.value = null
+  ballProgress.value = 0
+  trail.value = []
+  fallenPins.value = []
+  impactFlash.value = null
+  phase.value = 'ready'
 }
 
 function restartGame() {
+  stopRollSound()
   aim.value = 0
   power.value = 0.72
   hook.value = 0
   pins.value = Array.from({ length: 10 }, (_, index) => index)
+  frames.value = Array.from({ length: 10 }, () => ({ rolls: [], complete: false }))
+  currentFrame.value = 0
   phase.value = 'ready'
-  frame.value = 1
-  throwNumber.value = 1
-  framePins.value = 0
-  totalPins.value = 0
-  artifacts.value = []
-  latestArtifact.value = null
   ballProgress.value = 0
+  lastRoll.value = null
+  fallenPins.value = []
+  trail.value = []
+  impactFlash.value = null
 }
 
-function exportArtifacts() {
-  const blob = new Blob([JSON.stringify(artifacts.value, null, 2)], {
-    type: 'application/json',
-  })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = 'bowl-sequencer-artifacts.json'
-  link.click()
-  URL.revokeObjectURL(url)
+function toggleSound() {
+  soundEnabled.value = !soundEnabled.value
+  setSoundMuted(!soundEnabled.value)
 }
 
-function drawLane() {
+function drawPin(context, x, y, scale, rotation, alpha, radius) {
+  context.save()
+  context.translate(x, y)
+  context.rotate(rotation)
+  context.globalAlpha = alpha
+  context.shadowColor = '#ff5baf'
+  context.shadowBlur = 12 * scale
+  context.fillStyle = '#fffaff'
+  context.beginPath()
+  context.moveTo(-radius * 0.7, radius * 1.15)
+  context.bezierCurveTo(-radius * 0.45, radius * 0.5, -radius * 0.6, -radius * 0.1, -radius * 0.34, -radius * 0.52)
+  context.quadraticCurveTo(-radius * 0.64, -radius * 1.25, 0, -radius * 1.28)
+  context.quadraticCurveTo(radius * 0.64, -radius * 1.25, radius * 0.34, -radius * 0.52)
+  context.bezierCurveTo(radius * 0.6, -radius * 0.1, radius * 0.45, radius * 0.5, radius * 0.7, radius * 1.15)
+  context.quadraticCurveTo(0, radius * 1.48, -radius * 0.7, radius * 1.15)
+  context.fill()
+  context.shadowBlur = 0
+  context.fillStyle = '#ff4fa6'
+  context.fillRect(-radius * 0.45, -radius * 0.12, radius * 0.9, Math.max(2, radius * 0.14))
+  context.restore()
+}
+
+function drawLane(now = performance.now()) {
   const element = canvas.value
   if (!element) return
   const context = element.getContext('2d')
@@ -154,77 +189,197 @@ function drawLane() {
 
   const width = bounds.width
   const height = bounds.height
+  const centerX = width / 2
+  const laneTop = height * 0.075
+  const laneBottom = height * 0.96
+  const laneHeight = laneBottom - laneTop
+  const laneY = (progress) => laneTop + (1 - progress) * laneHeight
+  const laneWidthAt = (y) => width * (0.38 + 0.31 * clamp((y - laneTop) / laneHeight, 0, 1))
+
   context.setTransform(ratio, 0, 0, ratio, 0, 0)
   context.clearRect(0, 0, width, height)
-  context.fillStyle = '#080b16'
+  context.fillStyle = '#090b14'
   context.fillRect(0, 0, width, height)
 
-  const laneLeft = width * 0.18
-  const laneRight = width * 0.82
-  const laneTop = height * 0.08
-  const laneBottom = height * 0.96
-  const lane = context.createLinearGradient(0, laneTop, 0, laneBottom)
-  lane.addColorStop(0, '#1c2447')
-  lane.addColorStop(0.52, '#101a36')
-  lane.addColorStop(1, '#18204a')
-  context.shadowColor = '#49e8ff'
-  context.shadowBlur = 20
-  context.fillStyle = lane
-  context.fillRect(laneLeft, laneTop, laneRight - laneLeft, laneBottom - laneTop)
-  context.shadowBlur = 0
+  const flashAge = impactFlash.value ? now - impactFlash.value.startedAt : Infinity
+  const shake = flashAge < 220 ? Math.sin(flashAge * 0.12) * (1 - flashAge / 220) * 4 : 0
+  context.save()
+  context.translate(shake, shake * 0.35)
 
-  context.strokeStyle = 'rgba(86, 222, 255, 0.35)'
-  context.lineWidth = 2
-  context.strokeRect(laneLeft, laneTop, laneRight - laneLeft, laneBottom - laneTop)
-  for (let marker = 1; marker <= 7; marker += 1) {
-    const y = laneTop + (laneBottom - laneTop) * marker / 8
-    context.strokeStyle = 'rgba(134, 154, 255, 0.12)'
+  const topHalf = width * 0.19
+  const bottomHalf = width * 0.345
+  const laneGradient = context.createLinearGradient(0, laneTop, 0, laneBottom)
+  laneGradient.addColorStop(0, '#20274c')
+  laneGradient.addColorStop(0.45, '#17213d')
+  laneGradient.addColorStop(1, '#25244b')
+
+  context.beginPath()
+  context.moveTo(centerX - topHalf - 12, laneTop)
+  context.lineTo(centerX + topHalf + 12, laneTop)
+  context.lineTo(centerX + bottomHalf + 14, laneBottom)
+  context.lineTo(centerX - bottomHalf - 14, laneBottom)
+  context.closePath()
+  context.fillStyle = '#101426'
+  context.fill()
+
+  context.beginPath()
+  context.moveTo(centerX - topHalf, laneTop)
+  context.lineTo(centerX + topHalf, laneTop)
+  context.lineTo(centerX + bottomHalf, laneBottom)
+  context.lineTo(centerX - bottomHalf, laneBottom)
+  context.closePath()
+  context.shadowColor = '#4ae9ff'
+  context.shadowBlur = 24
+  context.fillStyle = laneGradient
+  context.fill()
+  context.shadowBlur = 0
+  context.strokeStyle = 'rgba(89, 231, 255, 0.48)'
+  context.lineWidth = 1.5
+  context.stroke()
+
+  context.save()
+  context.clip()
+  for (let line = -3; line <= 3; line += 1) {
+    const nearX = centerX + line * width * 0.065
+    const farX = centerX + line * width * 0.036
+    context.strokeStyle = line === 0 ? 'rgba(104, 217, 255, 0.12)' : 'rgba(104, 217, 255, 0.055)'
+    context.lineWidth = 1
     context.beginPath()
-    context.moveTo(laneLeft + 8, y)
-    context.lineTo(laneRight - 8, y)
+    context.moveTo(farX, laneTop)
+    context.lineTo(nearX, laneBottom)
+    context.stroke()
+  }
+  for (let marker = 1; marker <= 6; marker += 1) {
+    const y = laneTop + laneHeight * marker / 7
+    const halfWidth = laneWidthAt(y)
+    context.strokeStyle = 'rgba(176, 190, 255, 0.075)'
+    context.beginPath()
+    context.moveTo(centerX - halfWidth, y)
+    context.lineTo(centerX + halfWidth, y)
     context.stroke()
   }
 
-  for (const pin of pins.value) {
-    const position = PIN_LAYOUT[pin]
-    const x = width / 2 + position.x * (laneRight - laneLeft)
-    const y = laneTop + (1 - position.y) / 2 * (laneBottom - laneTop)
-    context.shadowColor = '#ff56d8'
-    context.shadowBlur = 12
-    context.fillStyle = '#fff6ff'
+  const arrowY = laneTop + laneHeight * 0.58
+  for (let arrow = -3; arrow <= 3; arrow += 1) {
+    const x = centerX + arrow * width * 0.034
+    context.fillStyle = arrow === 0 ? 'rgba(91, 233, 255, 0.5)' : 'rgba(184, 197, 255, 0.24)'
     context.beginPath()
-    context.ellipse(x, y, 5, 8, 0, 0, Math.PI * 2)
+    context.moveTo(x, arrowY + 8)
+    context.lineTo(x - 4, arrowY - 2)
+    context.lineTo(x + 4, arrowY - 2)
+    context.closePath()
     context.fill()
-    context.shadowBlur = 0
-    context.fillStyle = '#ff56d8'
-    context.fillRect(x - 4, y - 2, 8, 2)
+  }
+  context.restore()
+
+  if (phase.value === 'ready') {
+    context.setLineDash([5, 9])
+    context.lineWidth = 1
+    context.strokeStyle = 'rgba(87, 238, 255, 0.22)'
+    context.beginPath()
+    for (let index = 0; index <= 36; index += 1) {
+      const progress = 0.15 + index / 36 * 0.78
+      const position = getBallPosition(aim.value, hook.value, progress)
+      const y = laneY(progress)
+      const x = centerX + position.x * laneWidthAt(y)
+      if (index === 0) context.moveTo(x, y)
+      else context.lineTo(x, y)
+    }
+    context.stroke()
+    context.setLineDash([])
   }
 
-  let ballY = laneBottom - 32
-  let ballX = width / 2 + getBallPosition(aim.value, hook.value, 0).x * (laneRight - laneLeft)
-  if (phase.value === 'rolling') {
-    ballY = laneBottom - (laneBottom - laneTop - 48) * ballProgress.value
-    ballX = width / 2 + getBallPosition(aim.value, hook.value, ballProgress.value).x * (laneRight - laneLeft)
+  for (const point of trail.value) {
+    const age = now - point.at
+    if (age < 0 || age > 340) continue
+    const y = laneY(point.progress)
+    const x = centerX + point.x * laneWidthAt(y)
+    const alpha = (1 - age / 340) * 0.4
+    context.globalAlpha = alpha
+    context.fillStyle = '#59eeff'
+    context.shadowColor = '#59eeff'
+    context.shadowBlur = 16
+    context.beginPath()
+    context.arc(x, y, 4 + alpha * 7, 0, Math.PI * 2)
+    context.fill()
+    context.shadowBlur = 0
   }
-  context.shadowColor = '#52f5ff'
-  context.shadowBlur = 22
-  const ball = context.createRadialGradient(ballX - 5, ballY - 5, 1, ballX, ballY, 15)
-  ball.addColorStop(0, '#ffffff')
-  ball.addColorStop(0.28, '#70f8ff')
-  ball.addColorStop(1, '#237aff')
-  context.fillStyle = ball
+  context.globalAlpha = 1
+
+  for (const pin of pins.value) {
+    const position = PIN_LAYOUT[pin]
+    const progress = (position.y + 1) / 2
+    const y = laneY(progress)
+    const x = centerX + position.x * laneWidthAt(y)
+    const scale = 0.82 + (position.y - 0.55) * 0.55
+    drawPin(context, x, y, scale, 0, 1, 7.5 * scale)
+  }
+
+  for (const fallen of fallenPins.value) {
+    const elapsed = now - fallen.startAt
+    if (elapsed < 0 || elapsed > 1200) continue
+    const t = clamp(elapsed / 520, 0, 1)
+    const eased = 1 - (1 - t) * (1 - t)
+    const position = PIN_LAYOUT[fallen.id]
+    const progress = (position.y + 1) / 2
+    const y = laneY(progress) + Math.sin(t * Math.PI) * 5 + eased * 9
+    const baseX = centerX + position.x * laneWidthAt(laneY(progress))
+    const x = baseX + fallen.direction * (10 + fallen.energy * 17) * eased
+    const alpha = elapsed > 760 ? clamp(1 - (elapsed - 760) / 440, 0, 1) : 1
+    const scale = 0.82 + (position.y - 0.55) * 0.55
+    drawPin(context, x, y, scale, fallen.direction * Math.PI * 0.47 * eased, alpha, 7.5 * scale)
+  }
+
+  if (impactFlash.value && flashAge < 620) {
+    const y = laneY(impactFlash.value.progress)
+    const x = centerX + impactFlash.value.x * laneWidthAt(y)
+    const progress = flashAge / 620
+    context.globalAlpha = 1 - progress
+    context.strokeStyle = '#8df8ff'
+    context.lineWidth = 2
+    context.shadowColor = '#61edff'
+    context.shadowBlur = 24
+    context.beginPath()
+    context.arc(x, y, 11 + progress * 56, 0, Math.PI * 2)
+    context.stroke()
+    context.fillStyle = '#fff'
+    context.beginPath()
+    context.arc(x, y, Math.max(0, 10 * (1 - progress)), 0, Math.PI * 2)
+    context.fill()
+    context.shadowBlur = 0
+    context.globalAlpha = 1
+  }
+
+  const ballT = phase.value === 'rolling' || phase.value === 'result' ? ballProgress.value : 0
+  const ballPosition = getBallPosition(aim.value, hook.value, ballT)
+  const ballY = laneY(ballT)
+  const ballX = centerX + ballPosition.x * laneWidthAt(ballY)
+  const ballRadius = clamp(laneWidthAt(ballY) * 0.035, 10, 16)
+  context.shadowColor = '#55efff'
+  context.shadowBlur = 23
+  const ballGradient = context.createRadialGradient(ballX - ballRadius * 0.34, ballY - ballRadius * 0.38, 1, ballX, ballY, ballRadius)
+  ballGradient.addColorStop(0, '#ffffff')
+  ballGradient.addColorStop(0.3, '#8ef8ff')
+  ballGradient.addColorStop(1, '#3485ff')
+  context.fillStyle = ballGradient
   context.beginPath()
-  context.arc(ballX, ballY, 13, 0, Math.PI * 2)
+  context.arc(ballX, ballY, ballRadius, 0, Math.PI * 2)
   context.fill()
   context.shadowBlur = 0
+
+  context.restore()
 }
 
 function animate(now) {
   if (phase.value === 'rolling') {
     ballProgress.value = clamp((now - throwStartedAt) / 2200, 0, 1)
+    const position = getBallPosition(aim.value, hook.value, ballProgress.value)
+    trail.value.push({ x: position.x, progress: ballProgress.value, at: now })
+    trail.value = trail.value.filter((point) => now - point.at < 340)
     if (ballProgress.value >= 1) finishThrow()
   }
-  drawLane()
+  drawLane(now)
+  fallenPins.value = fallenPins.value.filter((pin) => now - pin.startAt < 1200)
   animationFrame = requestAnimationFrame(animate)
 }
 
@@ -232,12 +387,14 @@ function onKeydown(event) {
   if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
     if (phase.value !== 'ready') return
     event.preventDefault()
-    aim.value = clamp(aim.value + (event.code === 'ArrowLeft' ? -0.05 : 0.05), -1, 1)
+    aim.value = clamp(aim.value + (event.code === 'ArrowLeft' ? -0.04 : 0.04), -1, 1)
   } else if (event.code === 'Space') {
     event.preventDefault()
     launch()
   } else if (event.code === 'Enter' && phase.value === 'result') {
     advance()
+  } else if (event.code === 'Enter' && phase.value === 'gameover') {
+    restartGame()
   }
 }
 
@@ -258,36 +415,84 @@ onUnmounted(() => {
 <template>
   <main class="shell">
     <header class="topbar">
-      <a class="wordmark" href="#" aria-label="Bowl Sequencer home">
+      <a class="wordmark" href="#" aria-label="Neon Bowl home">
         <span class="logo-mark">◉</span>
-        <span>BOWL<span class="accent">/</span>SEQUENCER</span>
+        <span>NEON BOWL</span>
       </a>
-      <div class="session-stats">
-        <span>FRAME <b>{{ Math.min(frame, 10) }} / 10</b></span>
-        <span>PINS <b>{{ totalPins }}</b></span>
+      <div class="topbar-right">
+        <span class="arcade-tag"><i></i> ARCADE / SINGLE PLAYER</span>
+        <button class="sound-button" :aria-pressed="soundEnabled" @click="toggleSound">
+          {{ soundEnabled ? 'SOUND ON' : 'SOUND OFF' }}
+        </button>
+        <button class="restart-button" @click="restartGame">NEW GAME <span>↻</span></button>
       </div>
     </header>
 
-    <section class="game-layout">
-      <div class="game-column">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">ARCADE BOWLING / GROOVE GENERATOR</p>
-            <h1>Find your <span>rhythm.</span></h1>
+    <section class="scorecard" aria-label="Bowling scorecard">
+      <div class="scorecard-label">
+        <span class="eyebrow">YOUR GAME</span>
+        <strong>10 FRAME SCORECARD</strong>
+      </div>
+      <div class="frames-strip">
+        <div
+          v-for="(score, index) in scorecard"
+          :key="index"
+          class="frame-cell"
+          :class="{ active: currentFrame === index && phase !== 'gameover' }"
+        >
+          <span class="frame-number">{{ String(index + 1).padStart(2, '0') }}</span>
+          <div class="frame-marks">
+            <span v-for="(mark, markIndex) in score.marks" :key="markIndex">{{ mark }}</span>
           </div>
-          <div class="live-status"><i></i>{{ phase === 'rolling' ? 'BALL IN PLAY' : phase === 'gameover' ? 'SESSION COMPLETE' : 'SYSTEM READY' }}</div>
+          <strong>{{ score.cumulative ?? '·' }}</strong>
+        </div>
+      </div>
+      <div class="score-total">
+        <span>SCORE</span>
+        <strong>{{ totalScore }}</strong>
+      </div>
+    </section>
+
+    <section class="game-layout">
+      <div class="lane-column">
+        <div class="game-heading">
+          <div>
+            <p class="eyebrow">FRAME {{ String(Math.min(currentFrame + 1, 10)).padStart(2, '0') }} <span>·</span> BALL {{ phase === 'result' ? lastRoll.throw : throwNumber }}</p>
+            <h1>Make it <span>count.</span></h1>
+          </div>
+          <div class="game-status" :class="{ rolling: phase === 'rolling' }">
+            <i></i>{{ phase === 'rolling' ? 'BALL IN PLAY' : phase === 'gameover' ? 'GAME COMPLETE' : 'LANE READY' }}
+          </div>
         </div>
 
         <div class="lane-frame">
-          <canvas ref="canvas" class="lane-canvas" aria-label="Arcade bowling lane with remaining pins"></canvas>
-          <div class="lane-label lane-label-top">PIN DECK <span>01—10</span></div>
-          <div class="lane-label lane-label-bottom">RELEASE LINE <span>THROW {{ throwNumber }}</span></div>
-          <div class="lane-side-meter"><span></span><span></span><span></span></div>
+          <canvas ref="canvas" class="lane-canvas" aria-label="Neon bowling lane with ball and pins"></canvas>
+          <div class="lane-caption lane-caption-top"><span>PIN DECK</span><b>10</b></div>
+          <div class="lane-caption lane-caption-bottom"><span>RELEASE</span><b>{{ phase === 'rolling' ? 'ROLLING' : 'READY' }}</b></div>
+          <div v-if="phase === 'result' && ['STRIKE!', 'SPARE!', 'DOUBLE!'].includes(lastRoll.label)" class="lane-banner">
+            {{ lastRoll.label }}
+          </div>
         </div>
 
-        <div class="control-row">
+        <div class="lane-footnote">
+          <span><b>←</b><b>→</b> AIM</span>
+          <span><b>SPACE</b> ROLL</span>
+          <span><b>ENTER</b> CONTINUE</span>
+        </div>
+      </div>
+
+      <aside class="control-panel">
+        <div class="roll-result" :class="{ celebration: phase === 'result' && ['STRIKE!', 'SPARE!', 'DOUBLE!'].includes(lastRoll.label) }">
+          <span class="eyebrow">{{ phase === 'gameover' ? 'FINAL SCORE' : phase === 'result' ? `FRAME ${String(lastRoll.frame).padStart(2, '0')} / BALL ${lastRoll.throw}` : 'UP NEXT' }}</span>
+          <h2>{{ phase === 'gameover' ? totalScore : phase === 'result' ? lastRoll.label : 'Your turn.' }}</h2>
+          <p v-if="phase === 'result'">{{ lastRoll.pinsDown }} down <span>·</span> {{ lastRoll.pinsStanding }} standing</p>
+          <p v-else-if="phase === 'gameover'">That’s a full game. Nice bowling.</p>
+          <p v-else>Set your line and send it.</p>
+        </div>
+
+        <div class="shot-controls" :class="{ disabled: phase !== 'ready' }">
           <label class="control">
-            <span class="control-title">AIM <b>{{ aim.toFixed(2) }}</b></span>
+            <span class="control-title">AIM <b>{{ aim < -0.02 ? 'LEFT' : aim > 0.02 ? 'RIGHT' : 'CENTER' }}</b></span>
             <input v-model.number="aim" type="range" min="-1" max="1" step="0.01" :disabled="phase !== 'ready'" aria-label="Aim" />
           </label>
           <label class="control">
@@ -295,63 +500,35 @@ onUnmounted(() => {
             <input v-model.number="power" type="range" min="0.2" max="1" step="0.01" :disabled="phase !== 'ready'" aria-label="Power" />
           </label>
           <label class="control">
-            <span class="control-title">HOOK <b>{{ hook.toFixed(2) }}</b></span>
+            <span class="control-title">HOOK <b>{{ hook < -0.02 ? 'LEFT' : hook > 0.02 ? 'RIGHT' : 'NONE' }}</b></span>
             <input v-model.number="hook" type="range" min="-1" max="1" step="0.01" :disabled="phase !== 'ready'" aria-label="Hook" />
           </label>
-          <button v-if="phase === 'ready'" class="primary-button" @click="launch">
-            THROW <span>↗</span>
-          </button>
-          <button v-else-if="phase === 'result'" class="primary-button" @click="advance">
-            {{ isFrameComplete ? 'NEXT FRAME' : 'NEXT THROW' }} <span>↗</span>
-          </button>
-          <button v-else-if="phase === 'gameover'" class="primary-button" @click="restartGame">
-            PLAY AGAIN <span>↗</span>
-          </button>
-          <button v-else class="primary-button" disabled>ROLLING…</button>
-        </div>
-        <p class="keyboard-hint"><kbd>←</kbd><kbd>→</kbd> adjust aim <kbd>SPACE</kbd> throw <kbd>ENTER</kbd> continue</p>
-      </div>
-
-      <aside class="score-panel">
-        <div class="panel-block">
-          <p class="eyebrow">FRAME {{ Math.min(frame, 10) }} / THROW {{ throwNumber }}</p>
-          <template v-if="latestArtifact">
-            <h2 class="result-title">{{ frameResult }}</h2>
-            <p class="result-caption">{{ latestArtifact.outcome.pinsKnockedDown }} pin{{ latestArtifact.outcome.pinsKnockedDown === 1 ? '' : 's' }} down · seed {{ latestArtifact.seed }}</p>
-          </template>
-          <template v-else-if="phase === 'gameover'">
-            <h2 class="result-title">SESSION END</h2>
-            <p class="result-caption">{{ artifacts.length }} throws archived · {{ totalPins }} pins down</p>
-          </template>
-          <template v-else>
-            <h2 class="result-title idle-title">READY TO ROLL</h2>
-            <p class="result-caption">Line it up. Let the groove follow.</p>
-          </template>
         </div>
 
-        <div v-if="latestArtifact" class="pattern-block">
-          <div class="block-heading"><span>GENERATED PATTERN</span><span class="seed-tag">SEED {{ latestArtifact.seed }}</span></div>
-          <pre class="pattern">{{ latestArtifact.pattern }}</pre>
-          <div class="map-preview">
-            <div class="block-heading"><span>VELOCITY MAP</span><span>16 STEP</span></div>
-            <div class="velocity-bars">
-              <span v-for="(velocity, index) in latestArtifact.velocityMap" :key="index" :style="{ height: `${Math.max(3, velocity * 0.32)}px` }" :class="{ accent: latestArtifact.accentMap[index] }"></span>
-            </div>
-          </div>
-        </div>
-        <div v-else class="pattern-placeholder">
-          <span class="placeholder-icon">♫</span>
-          <p>Every throw becomes a new pattern.</p>
-          <small>Outcome data → deterministic groove</small>
+        <div class="rack-status">
+          <span>PINS STILL UP</span>
+          <strong>{{ phase === 'result' ? lastRoll.pinsStanding : pins.length }}<small> / 10</small></strong>
         </div>
 
-        <div class="panel-footer">
-          <span>{{ artifacts.length }} ARTIFACT{{ artifacts.length === 1 ? '' : 'S' }} STORED</span>
-          <button class="text-button" :disabled="!artifacts.length" @click="exportArtifacts">EXPORT JSON <span>↓</span></button>
-        </div>
+        <button v-if="phase === 'ready'" class="roll-button" @click="launch">
+          <span>ROLL BALL</span><b>↗</b>
+        </button>
+        <button v-else-if="phase === 'rolling'" class="roll-button" disabled>
+          <span>ROLLING…</span><b>◌</b>
+        </button>
+        <button v-else-if="phase === 'result'" class="roll-button" @click="advance">
+          <span>{{ lastRoll.transition.gameOver ? 'FINAL SCORE' : lastRoll.transition.frameComplete ? 'NEXT FRAME' : lastRoll.transition.newRack ? 'BONUS BALL' : 'SECOND BALL' }}</span><b>↗</b>
+        </button>
+        <button v-else class="roll-button" @click="restartGame">
+          <span>PLAY AGAIN</span><b>↻</b>
+        </button>
+        <p class="control-hint">{{ phase === 'ready' ? 'AIM. COMMIT. LET IT FLY.' : phase === 'rolling' ? 'WATCH THE LINE.' : phase === 'gameover' ? 'PERFECT GAME? RUN IT BACK.' : lastRoll.transition.frameComplete ? 'NEXT FRAME AWAITS.' : lastRoll.transition.newRack ? 'BONUS BALL READY.' : 'PICK UP WHAT’S LEFT.' }}</p>
       </aside>
     </section>
 
-    <footer class="footer"><span>ONE MORE THROW.</span><span>PROTOTYPE BUILD 0.1</span></footer>
+    <footer class="footer">
+      <span>ONE MORE ROLL.</span>
+      <span>NEON BOWL <b>·</b> FREE PLAY</span>
+    </footer>
   </main>
 </template>
