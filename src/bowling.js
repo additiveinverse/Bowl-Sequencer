@@ -15,22 +15,30 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-export function getBallPosition(aim, hook, progress) {
+export function getBallPosition(aim, spin, power, progress) {
   const t = clamp(progress, 0, 1)
+  const frictionProgress = clamp((t - 0.2) / 0.8, 0, 1)
+  const friction = frictionProgress * frictionProgress * (3 - 2 * frictionProgress)
+  const lateralDeflection = spin * (0.12 + (1 - power) * 0.07) * friction
   return {
-    x: clamp(aim * 0.4 + hook * 0.15 * t * t, -0.5, 0.5),
+    x: clamp(aim * 0.4 + lateralDeflection, -0.5, 0.5),
     y: -1 + 2 * t,
   }
+}
+
+export function getBallRotation(spin, progress) {
+  const t = clamp(progress, 0, 1)
+  return t * Math.PI * 10 + spin * t * Math.PI * 3.5
 }
 
 function getPinDistance(position, pin) {
   return Math.hypot(position.x - pin.x, position.y - pin.y)
 }
 
-export function simulateThrow({ standingPins, aim, power, hook }) {
+export function simulateThrow({ standingPins, aim, power, spin }) {
   const trajectory = Array.from({ length: TRAJECTORY_SAMPLES }, (_, index) => {
     const progress = index / (TRAJECTORY_SAMPLES - 1)
-    const point = getBallPosition(aim, hook, progress)
+    const point = getBallPosition(aim, spin, power, progress)
     return {
       x: Number(point.x.toFixed(3)),
       y: Number(point.y.toFixed(3)),
@@ -86,7 +94,7 @@ export function simulateThrow({ standingPins, aim, power, hook }) {
   const remainingPins = standingPins.filter((pin) => !knockedPins.includes(pin))
   const firstHit = [...directHits.entries()].sort((a, b) => a[1] - b[1])[0]
   const impactProgress = firstHit ? firstHit[1] : 1
-  const impactPosition = getBallPosition(aim, hook, impactProgress)
+  const impactPosition = getBallPosition(aim, spin, power, impactProgress)
 
   return {
     knockedPins,

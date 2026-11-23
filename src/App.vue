@@ -1,13 +1,13 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { getBallPosition, PIN_LAYOUT, simulateThrow } from './bowling.js'
+import { getBallPosition, getBallRotation, PIN_LAYOUT, simulateThrow } from './bowling.js'
 import { getFrameTransition, getScorecard } from './scoring.js'
 import { playPinImpact, setSoundMuted, startRollSound, stopRollSound } from './sound.js'
 
 const canvas = ref(null)
 const aim = ref(0)
 const power = ref(0.72)
-const hook = ref(0)
+const spin = ref(0)
 const pins = ref(Array.from({ length: 10 }, (_, index) => index))
 const frames = ref(Array.from({ length: 10 }, () => ({ rolls: [], complete: false })))
 const currentFrame = ref(0)
@@ -70,7 +70,7 @@ function finishThrow() {
     standingPins: pins.value,
     aim: aim.value,
     power: power.value,
-    hook: hook.value,
+    spin: spin.value,
   })
   const pinsDown = simulation.knockedPins.length
   playPinImpact(pinsDown)
@@ -136,7 +136,7 @@ function restartGame() {
   stopRollSound()
   aim.value = 0
   power.value = 0.72
-  hook.value = 0
+  spin.value = 0
   pins.value = Array.from({ length: 10 }, (_, index) => index)
   frames.value = Array.from({ length: 10 }, () => ({ rolls: [], complete: false }))
   currentFrame.value = 0
@@ -175,6 +175,35 @@ function drawPin(context, x, y, scale, rotation, alpha, radius) {
   context.restore()
 }
 
+function drawBall(context, x, y, radius, rotation) {
+  context.save()
+  context.translate(x, y)
+  context.rotate(rotation)
+  context.shadowColor = '#55efff'
+  context.shadowBlur = 23
+  const gradient = context.createRadialGradient(-radius * 0.34, -radius * 0.38, 1, 0, 0, radius)
+  gradient.addColorStop(0, '#ffffff')
+  gradient.addColorStop(0.3, '#8ef8ff')
+  gradient.addColorStop(1, '#3485ff')
+  context.fillStyle = gradient
+  context.beginPath()
+  context.arc(0, 0, radius, 0, Math.PI * 2)
+  context.fill()
+  context.shadowBlur = 0
+  context.strokeStyle = 'rgba(8, 36, 87, 0.65)'
+  context.lineWidth = Math.max(1.5, radius * 0.13)
+  context.beginPath()
+  context.ellipse(-radius * 0.08, 0, radius * 0.32, radius * 0.82, 0.28, 0, Math.PI * 2)
+  context.stroke()
+  context.fillStyle = 'rgba(9, 33, 75, 0.7)'
+  for (const [holeX, holeY] of [[-0.25, -0.2], [0.1, -0.3], [0.28, 0.03]]) {
+    context.beginPath()
+    context.arc(holeX * radius, holeY * radius, radius * 0.09, 0, Math.PI * 2)
+    context.fill()
+  }
+  context.restore()
+}
+
 function drawLane(now = performance.now()) {
   const element = canvas.value
   if (!element) return
@@ -194,7 +223,7 @@ function drawLane(now = performance.now()) {
   const laneBottom = height * 0.96
   const laneHeight = laneBottom - laneTop
   const laneY = (progress) => laneTop + (1 - progress) * laneHeight
-  const laneWidthAt = (y) => width * (0.38 + 0.31 * clamp((y - laneTop) / laneHeight, 0, 1))
+  const laneWidthAt = (y) => width * (0.48 + 0.22 * clamp((y - laneTop) / laneHeight, 0, 1))
 
   context.setTransform(ratio, 0, 0, ratio, 0, 0)
   context.clearRect(0, 0, width, height)
@@ -206,8 +235,8 @@ function drawLane(now = performance.now()) {
   context.save()
   context.translate(shake, shake * 0.35)
 
-  const topHalf = width * 0.19
-  const bottomHalf = width * 0.345
+  const topHalf = width * 0.24
+  const bottomHalf = width * 0.35
   const laneGradient = context.createLinearGradient(0, laneTop, 0, laneBottom)
   laneGradient.addColorStop(0, '#20274c')
   laneGradient.addColorStop(0.45, '#17213d')
@@ -279,7 +308,7 @@ function drawLane(now = performance.now()) {
     context.beginPath()
     for (let index = 0; index <= 36; index += 1) {
       const progress = 0.15 + index / 36 * 0.78
-      const position = getBallPosition(aim.value, hook.value, progress)
+      const position = getBallPosition(aim.value, spin.value, power.value, progress)
       const y = laneY(progress)
       const x = centerX + position.x * laneWidthAt(y)
       if (index === 0) context.moveTo(x, y)
@@ -351,21 +380,11 @@ function drawLane(now = performance.now()) {
   }
 
   const ballT = phase.value === 'rolling' || phase.value === 'result' ? ballProgress.value : 0
-  const ballPosition = getBallPosition(aim.value, hook.value, ballT)
+  const ballPosition = getBallPosition(aim.value, spin.value, power.value, ballT)
   const ballY = laneY(ballT)
   const ballX = centerX + ballPosition.x * laneWidthAt(ballY)
   const ballRadius = clamp(laneWidthAt(ballY) * 0.035, 10, 16)
-  context.shadowColor = '#55efff'
-  context.shadowBlur = 23
-  const ballGradient = context.createRadialGradient(ballX - ballRadius * 0.34, ballY - ballRadius * 0.38, 1, ballX, ballY, ballRadius)
-  ballGradient.addColorStop(0, '#ffffff')
-  ballGradient.addColorStop(0.3, '#8ef8ff')
-  ballGradient.addColorStop(1, '#3485ff')
-  context.fillStyle = ballGradient
-  context.beginPath()
-  context.arc(ballX, ballY, ballRadius, 0, Math.PI * 2)
-  context.fill()
-  context.shadowBlur = 0
+  drawBall(context, ballX, ballY, ballRadius, getBallRotation(spin.value, ballT))
 
   context.restore()
 }
@@ -373,7 +392,7 @@ function drawLane(now = performance.now()) {
 function animate(now) {
   if (phase.value === 'rolling') {
     ballProgress.value = clamp((now - throwStartedAt) / 2200, 0, 1)
-    const position = getBallPosition(aim.value, hook.value, ballProgress.value)
+    const position = getBallPosition(aim.value, spin.value, power.value, ballProgress.value)
     trail.value.push({ x: position.x, progress: ballProgress.value, at: now })
     trail.value = trail.value.filter((point) => now - point.at < 340)
     if (ballProgress.value >= 1) finishThrow()
@@ -500,8 +519,8 @@ onUnmounted(() => {
             <input v-model.number="power" type="range" min="0.2" max="1" step="0.01" :disabled="phase !== 'ready'" aria-label="Power" />
           </label>
           <label class="control">
-            <span class="control-title">HOOK <b>{{ hook < -0.02 ? 'LEFT' : hook > 0.02 ? 'RIGHT' : 'NONE' }}</b></span>
-            <input v-model.number="hook" type="range" min="-1" max="1" step="0.01" :disabled="phase !== 'ready'" aria-label="Hook" />
+            <span class="control-title">SPIN <b>{{ spin < -0.02 ? 'LEFT' : spin > 0.02 ? 'RIGHT' : 'NONE' }}</b></span>
+            <input v-model.number="spin" type="range" min="-1" max="1" step="0.01" :disabled="phase !== 'ready'" aria-label="Spin" />
           </label>
         </div>
 

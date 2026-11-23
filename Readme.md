@@ -754,7 +754,7 @@ The music layer exists to reward play, not to replace it.
 
 # Prototype Status
 
-The current prototype is a bowling-first arcade game: Canvas 2D lane, aim/power/hook controls, deterministic pin collisions, animated pinfall, synthesized roll/impact sounds with a mute toggle, and ten-frame scoring with tenth-frame bonus balls. Sequencer UI, drum playback, and MIDI are intentionally parked while the bowling loop is tuned.
+The current prototype is a bowling-first arcade game: Canvas 2D lane, aim/power/spin controls, deterministic pin collisions, animated pinfall, synthesized roll/impact sounds with a mute toggle, and ten-frame scoring with tenth-frame bonus balls. Sequencer UI, drum playback, and MIDI are intentionally parked while the bowling loop is tuned.
 
 Run locally with:
 

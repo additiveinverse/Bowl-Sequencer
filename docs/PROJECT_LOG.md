@@ -76,5 +76,30 @@
 ### Next Experiment
 - Play several complete games, especially tenth-frame combinations, and tune collision/control feel before restoring optional music features.
 
+## 2026-11-22 — Add spin and widen the view
+
+### Challenges
+- The previous hook curve was small and fixed in shape, and the ball had no visible rotation cue.
+- The lane's far edge was much narrower than its release edge, while the full interface pushed controls below the playfield on medium screens.
+
+### What We Learned
+- Side spin can control both the ball's visible seam rotation and a friction-driven late hook; lower power should allow a larger deflection.
+- A wider far end makes pin targeting easier to read without changing the game to an isometric projection.
+
+### Changed Assumptions
+- Replaced the separate hook control with a signed spin control that produces hook through the lane model.
+- The game should prioritize a compact playfield/control layout on typical desktop heights.
+
+### Decisions
+- Added a rotating seam and finger holes to the Canvas ball so spin is visible during the roll.
+- Reduced the lane's perspective taper and adjusted its height/layout to reclaim vertical screen space.
+
+### Open Questions
+- Does the current spin range create enough visible movement without making aiming feel unpredictable?
+- Does the wider perspective remain readable on mobile screens?
+
+### Next Experiment
+- Play-test left and right spin at low and high power, then tune the curve and compact layout from the feel of actual throws.
+
 ### Next Experiment
 - Implement and test official ten-pin scoring, including strikes, spares, and tenth-frame rules.
