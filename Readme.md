@@ -1,4 +1,4 @@
-# BUILD PROMPT: Bowling For Sequences
+# Bowling For Sequences
 
 ## Core Idea
 
